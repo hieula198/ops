@@ -1,0 +1,19 @@
+name: Deploy On-Premise Mode pipeline
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - deployment/development
+      - deployment/staging
+      - deployment/production
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  call-on-premise-mode:
+    name: Call On-Premise Mode workflow
+    uses: hieula198/ops/.github/workflows/on-premise-mode.yaml@main
