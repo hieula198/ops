@@ -1,0 +1,249 @@
+- hosts: all
+  remote_user: "{{ ansible_user | default('ubuntu') }}"
+  become: true
+  become_method: sudo
+  tasks:
+    - name: Update apt cache
+      apt: update_cache=yes cache_valid_time=3600
+
+    - name: Upgrade all apt packages
+      apt: upgrade=dist
+
+    - name: Install dependencies
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - gnupg-agent
+
+    # DOCKER INSTALLATION
+    - name: Add an apt signing key for Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add apt repository for stable version
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: Install Docker
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+
+    - name: Add user to docker group
+      user:
+        name: "{{ansible_user}}"
+        group: docker
+      tags:
+        - docker
+
+    - name: Download docker-compose {{ docker_compose_version }}
+      get_url:
+        url: https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-Linux-x86_64
+        dest: ~/docker-compose
+        mode: "+x"
+
+    - name: Check docker-compose exists
+      stat: path=~/docker-compose
+      register: docker_compose
+
+    - name: Move docker-compose to /usr/local/bin/docker-compose
+      command: mv ~/docker-compose /usr/local/bin/docker-compose
+      when: docker_compose.stat.exists
+
+    # REQUIRED PACKAGES FOR USING ANSIBLE DOCKER (for portainer installation below)
+    - name: Install related Ubuntu packages
+      apt:
+        name: "{{ packages }}"
+        state: latest
+      vars:
+        packages:
+          - python3-pip
+          - mc
+      tags:
+        - docker
+
+    - name: Install python packages
+      pip:
+        name: docker
+      tags:
+        - docker
+
+    - name: Install python packages
+      pip:
+        name: requests==2.23.0
+      tags:
+        - docker
+
+    - name: Install python packages
+      pip:
+        name: jsondiff
+      tags:
+        - docker
+
+    # SETUP DOCKER SWARM AND COMMON STACKS
+    - name: Create volumes directory
+      file:
+        path: "{{volume_disk}}"
+        state: directory
+        mode: '0755'
+      tags:
+        - docker
+
+    - name: Crate stack directory
+      file:
+        path: "{{stack_disk}}"
+        state: directory
+        mode: '0755'
+      tags:
+        - docker
+        - render-stack
+
+    - name: Get info on Docker Swarm
+      docker_swarm_info:
+      ignore_errors: yes
+      register: result
+      tags:
+        - docker
+
+    - name: Inform about basic flags
+      debug:
+        msg: |
+          Was able to talk to docker daemon: {{ result.can_talk_to_docker }}
+          Docker in Swarm mode: {{ result.docker_swarm_active }}
+          This is a Manager node: {{ result.docker_swarm_manager }}
+      tags:
+        - docker
+
+    - name: Initialize Docker Swarm if inactive
+      command: docker swarm init
+      when: result.docker_swarm_active != True
+      tags:
+        - docker
+
+    - name: Setup common variable for docker stacks
+      set_fact:
+        portainer_volume_disk: "{{volume_disk}}/portainer"
+        nginx_data_volume_disk: "{{volume_disk}}/nginx/data"
+        nginx_letsencrypt_volume_disk: "{{volume_disk}}/nginx/letsencrypt"
+      tags:
+       - docker
+
+    - name: Create shared overlay network
+      community.docker.docker_network:
+        name: shared_net
+        driver: overlay
+        attachable: true
+        scope: swarm
+        state: present
+      tags:
+        - docker
+
+    - name: Create portainer volume directory
+      file:
+        path: "{{item}}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{portainer_volume_disk}}"
+        - "{{nginx_data_volume_disk}}"
+        - "{{nginx_letsencrypt_volume_disk}}"
+      tags:
+        - docker
+        - render-stack
+
+    - name: Render portainer stack
+      template:
+        src: ./data/stack-templates/0.portainer.j2
+        dest: "{{stack_disk}}/0.portainer.yaml"
+      tags:
+        - docker
+        - render-stack
+
+    - name: Deploy portainer stack
+      community.docker.docker_stack:
+        state: present
+        name: portainer
+        compose:
+          - "{{stack_disk}}/0.portainer.yaml"
+      tags:
+        - docker
+
+    - name: Render nginx proxy management stack
+      template:
+        src: ./data/stack-templates/1.nginx-proxy-manager.j2
+        dest: "{{stack_disk}}/1.nginx-proxy.yaml"
+      tags:
+        - docker
+        - render-stack
+
+    - name: Deploy nginx proxy management stack
+      community.docker.docker_stack:
+        state: present
+        name: nginx-proxy-manager
+        compose:
+          - "{{stack_disk}}/1.nginx-proxy.yaml"
+      tags:
+        - docker
+
+    - name: Render runner stack
+      template:
+        src: ./data/stack-templates/2.runner.j2
+        dest: "{{stack_disk}}/2.runner.yaml"
+      tags:
+        - docker
+        - render-stack
+        - runner
+
+    - name: Deploy github runner stack
+      community.docker.docker_stack:
+        state: present
+        name: github-runer
+        compose:
+          - "{{stack_disk}}/2.runner.yaml"
+      tags:
+        - docker
+        - runner
+
+    # FIREWALL SETUP
+    - name: Open Nginx manager port
+      ufw:
+        state: enabled
+        rule: allow
+        port: "81"
+        proto: tcp
+
+    - name: Open HTTP port
+      ufw:
+        state: enabled
+        rule: allow
+        port: "80"
+        proto: tcp
+
+    - name: Open HTTPS port
+      ufw:
+        state: enabled
+        rule: allow
+        port: "443"
+        proto: tcp
+
+    - name: Open SSH port
+      ufw:
+        state: enabled
+        rule: allow
+        port: "22"
+        proto: tcp

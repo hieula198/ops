@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  runner:
+    image: myoung34/github-runner:{{runner_version}}
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      RUNNER_SCOPE: {{runner_scope}}
+      RUNNER_NAME_PREFIX: {{runner_name_prefix}}
+      REPO_URL: {{runner_repo}}
+      LABELS: {{runner_labels}}
+      EPHEMERAL: {{runner_ephemeral}}
+      ACCESS_TOKEN: {{runner_access_token}}
+    deploy:
+      replicas: 3
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true
