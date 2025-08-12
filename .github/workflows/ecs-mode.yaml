@@ -1,0 +1,217 @@
+name: Runner ecs mode
+
+on:
+  workflow_call:
+    secrets:
+      ECR_REPOSITORY:
+        description: 'ECR repository name'
+        required: true
+      ECS_SERVICE:
+        description: 'ECS service name'
+        required: true
+      ECS_CLUSTER:
+        description: 'ECS cluster name'
+        required: true
+      AWS_ACCESS_KEY_ID:
+        description: 'AWS Access Key ID'
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        description: 'AWS Secret Access Key'
+        required: true
+      AWS_REGION:
+        description: 'AWS Region'
+        required: true
+
+jobs:
+  initialize:
+    name: Setup runner environment
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true))
+    runs-on: [ self-hosted, runner ]
+    steps:
+      - name: Prepare environment
+        id: vars
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref || github.ref_name }}"
+          BRANCH="${TARGET_BRANCH#deployment/}"
+          IMAGE_TAG="${BRANCH}-${TAG}"
+          IMAGE_TAG_LATEST="${BRANCH}-latest"     
+          
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG_LATEST=$IMAGE_TAG_LATEST" >> $GITHUB_OUTPUT
+          echo "BRANCH=$BRANCH" >> $GITHUB_OUTPUT
+    outputs:
+      IMAGE_TAG: ${{ steps.vars.outputs.IMAGE_TAG }}
+      IMAGE_TAG_LATEST: ${{ steps.vars.outputs.IMAGE_TAG_LATEST }}
+      TAG: ${{ steps.vars.outputs.TAG }}
+      BRANCH: ${{ steps.vars.outputs.BRANCH }}
+
+  verify:
+    name: Verify lint and scan issue
+    runs-on: [self-hosted, runner]
+    needs: initialize
+
+    steps:
+      - name: Update result in PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ github.event.pull_request.number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "☕🚬 Chill guys! It seems everything is sound good."
+            })
+
+  build:
+    name: Build image and Release to ECR
+    needs: initialize
+    runs-on: [self-hosted, runner]
+    env:
+      IMAGE: "${{ secrets.ECR_REPOSITORY}}:${{ needs.initialize.outputs.IMAGE_TAG }}"
+      IMAGE_LATEST: "${{ secrets.ECR_REPOSITORY}}:${{ needs.initialize.outputs.IMAGE_TAG_LATEST }}"
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag ${{ env.IMAGE }} \
+            --cache-from ${{ env.IMAGE_LATEST }} \
+            .
+
+      - name: Push Docker image to ECR
+        run: |
+          docker tag ${{ env.IMAGE }} ${{ env.IMAGE_LATEST }}
+          docker push ${{ env.IMAGE }}
+          docker push ${{ env.IMAGE_LATEST }}
+
+      - name: Update result in PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ github.event.pull_request.number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "🏗️🏗️🏗️ Build image sucesss!:\n`${{ needs.initialize.outputs.IMAGE_TAG }}`"
+            })
+
+  deploy:
+    name: Deploy to Amazon ECS
+    needs: [initialize, build]
+    runs-on: [self-hosted, runner]
+    env:
+      IMAGE: "${{ secrets.ECR_REPOSITORY}}:${{ needs.initialize.outputs.IMAGE_TAG }}"
+      IMAGE_LATEST: "${{ secrets.ECR_REPOSITORY}}:${{ needs.initialize.outputs.IMAGE_TAG_LATEST }}"
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install AWS CLI v2 and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq less
+          
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "AWS CLI not found, installing..." 
+            sudo apt-get install -y unzip
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install --update
+          else
+            echo "AWS CLI already installed:"
+            aws --version
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download task definition from AWS
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --services ${{ secrets.ECS_SERVICE }} \
+            --query "services[0].taskDefinition" \
+            --output text)
+          
+          echo "Task Definition ARN: $TASK_DEF_ARN"
+          
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query taskDefinition > task-definition.json
+
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)' \
+            task-definition.json > clean-task-definition.json
+          
+          mv clean-task-definition.json task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: "application"
+          image: ${{ env.IMAGE }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE }}
+          cluster: ${{ secrets.ECS_CLUSTER }}
+          wait-for-service-stability: false
+
+  notify:
+    name: Notify deployment status
+    needs: [deploy]
+    runs-on: [self-hosted, runner]
+    steps:
+      - name: Notify deployment status
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+            exit 1
+          fi
+
+  notify-failure:
+    name: Notify PR on failure
+    runs-on: [self-hosted, runner]
+    needs:
+      - verify
+      - build
+      - deploy
+    if: failure()
+    steps:
+      - name: Notify PR on failure
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ github.event.pull_request.number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🔥🔥🔥 Something went wrong during the workflow execution. Please check the logs for details.`,
+            })
