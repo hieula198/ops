@@ -1,0 +1,131 @@
+[
+  {
+    "env": "staging",
+    "service_name": "backend",
+    "average_cpu_to_scale": 80,
+    "average_ram_to_scale": 80,
+    "container_configs": [
+      {
+        "name": "application",
+        "image": "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/<PROJECT_NAME>-backend-service:staging-latest",
+        "port_mappings": {
+          "container_port": 3000,
+          "host_port": 3000
+        },
+        "memory": 512,
+        "cpu": 256,
+        "command": []
+      }
+    ],
+    "alb_listener_rule_priority": 100,
+    "health_check_path": "/health",
+    "max_task_numbers": 5,
+    "min_task_numbers": 2,
+    "redirect_host_header": [
+      "api-staging.domain.com"
+    ],
+    "service_port": 3000,
+    "target_group_port": 80,
+    "env_file_path": "./data/secrets/staging/backend.env",
+    "task_cpu": 256,
+    "task_memory": 512
+  },
+  {
+    "env": "staging",
+    "service_name": "backend-transaction",
+    "average_cpu_to_scale": 80,
+    "average_ram_to_scale": 80,
+    "container_configs": [
+      {
+        "name": "application",
+        "image": "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/<PROJECT_NAME>-backend-service:staging-latest",
+        "port_mappings": {
+          "container_port": 3000,
+          "host_port": 3000
+        },
+        "memory": 512,
+        "cpu": 256,
+        "command": [
+          "node",
+          "dist/src/transaction.js"
+        ]
+      }
+    ],
+    "alb_listener_rule_priority": 0,
+    "health_check_path": "/",
+    "max_task_numbers": 3,
+    "min_task_numbers": 1,
+    "redirect_host_header": [],
+    "service_port": 3000,
+    "target_group_port": 80,
+    "env_file_path": "./data/secrets/staging/backend.env",
+    "task_cpu": 256,
+    "task_memory": 512
+  },
+  {
+    "env": "staging",
+    "service_name": "fe-user",
+    "average_cpu_to_scale": 80,
+    "average_ram_to_scale": 80,
+    "container_configs": [
+      {
+        "name": "application",
+        "image": "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/<PROJECT_NAME>-frontend-service:staging-latest",
+        "port_mappings": {
+          "container_port": 8080,
+          "host_port": 8080
+        },
+        "memory": 512,
+        "cpu": 256,
+        "command": []
+      }
+    ],
+    "alb_listener_rule_priority": 101,
+    "health_check_path": "/",
+    "max_task_numbers": 3,
+    "min_task_numbers": 1,
+    "redirect_host_header": [
+      "user-staging.domain.com"
+    ],
+    "service_port": 8080,
+    "target_group_port": 80,
+    "env_file_path": "./data/secrets/common.env",
+    "task_cpu": 256,
+    "task_memory": 512
+  },
+  {
+    "env": "staging",
+    "service_name": "fe-admin",
+    "average_cpu_to_scale": 80,
+    "average_ram_to_scale": 80,
+    "container_configs": [
+      {
+        "name": "application",
+        "image": "<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/<PROJECT_NAME>-frontend-service:staging-latest",
+        "port_mappings": {
+          "container_port": 8080,
+          "host_port": 8080
+        },
+        "memory": 512,
+        "cpu": 256,
+        "command": [
+          "pm2-runtime",
+          "start",
+          "pm2-user.config.cjs"
+        ]
+      }
+    ],
+    "alb_listener_rule_priority": 102,
+    "health_check_path": "/",
+    "max_task_numbers": 3,
+    "min_task_numbers": 1,
+    "redirect_host_header": [
+      "admin-staging.domain.com"
+    ],
+    "service_port": 8080,
+    "target_group_port": 80,
+    "env_file_path": "./data/secrets/common.env",
+    "task_cpu": 256,
+    "task_memory": 512
+  }
+]

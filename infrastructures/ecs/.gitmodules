@@ -1,0 +1,3 @@
+[submodule "modules/lambda/video-process/source"]
+	path = modules/lambda/video-process/source
+	url = git@git.vmo.dev:DU22/on-going/gen23300-gen-mvp-phase-1/application/genesis-video-process-lambda.git
