@@ -21,6 +21,9 @@ on:
       AWS_REGION:
         description: 'AWS Region'
         required: true
+      ENVIRONMENT_BASE64:
+        description: 'Environment variables in base64 format (sometimes used for sensitive data in build time)'
+        required: false
 
 jobs:
   initialize:
@@ -86,6 +89,15 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Decode environment variables
+        run: |
+          if [ -n "${{ secrets.ENVIRONMENT_BASE64 }}" ]; then
+            echo "${{ secrets.ENVIRONMENT_BASE64 }}" | base64 --decode > .env
+            echo "Environment variables decoded and saved to .env file."
+          else
+            echo "ENVIRONMENT_BASE64 secret is not set or empty"
+          fi
 
       - name: Build Docker image
         run: |
